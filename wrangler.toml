@@ -1,0 +1,5 @@
+name = "introspective"
+type = "webpack"
+account_id = "6df56fca50908bd623ff3bd51707d6b6"
+workers_dev = true
+webpack_config = "webpack.config.js"
