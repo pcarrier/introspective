@@ -1,20 +1,53 @@
-import { buildClientSchema, graphql } from 'graphql';
+import { buildSchema, graphql } from "graphql";
 
 const gql = String.raw,
   html = String.raw;
 const hashPattern = new RegExp('^[0-9a-f]{128}$');
 
-async function getSchema({
-  graph,
-  variant,
-  hash,
-  apiKey
-}: {
+interface Target {
   graph: string;
   variant: string | undefined;
   hash: string | undefined;
   apiKey: string;
-}) {
+}
+
+function extractTarget(url: URL): Target {
+  const urlParts = url.pathname.split('/');
+
+  const graph = urlParts[1] || url.searchParams.get('graph') || url.searchParams.get('service');
+
+  const specifier = urlParts[2];
+
+  let hash, variant;
+  if (specifier) {
+    if (hashPattern.test(specifier)) {
+      hash = specifier;
+    } else {
+      variant = specifier;
+    }
+  }
+
+  hash = hash || url.searchParams.get('hash');
+  variant = variant || url.searchParams.get('variant') || url.searchParams.get('tag');
+
+  // Fall back to default variant if only graphID is specified
+  if (!hash && !variant) {
+    variant = 'current';
+  }
+
+  if (!graph) {
+    throw Error('graph URL path or search parameter required.');
+  }
+
+  const apiKey = url.searchParams.get('apiKey');
+  if (!apiKey) {
+    throw Error('X-API-Key header or apiKey search parameter required.');
+  }
+
+  return { graph, variant, hash, apiKey };
+}
+
+async function getSchemaDocument({ graph, variant, hash, apiKey }: Target) {
   const response = await fetch('https://engine-graphql.apollographql.com/api/graphql', {
     method: 'POST',
     headers: {
@@ -26,98 +59,7 @@ async function getSchema({
         query Introspective($graph: ID!, $variant: String, $hash: ID) {
           service(id: $graph) {
             schema(tag: $variant, hash: $hash) {
-              introspection {
-                queryType {
-                  name
-                }
-                mutationType {
-                  name
-                }
-                subscriptionType {
-                  name
-                }
-                types {
-                  ...FullType
-                }
-                directives {
-                  name
-                  locations
-                  args {
-                    ...InputValue
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        fragment FullType on IntrospectionType {
-          kind
-          name
-          fields {
-            name
-            args {
-              ...InputValue
-            }
-            type {
-              ...TypeRef
-            }
-            isDeprecated
-            deprecationReason
-          }
-          inputFields {
-            ...InputValue
-          }
-          interfaces {
-            ...TypeRef
-          }
-          enumValues(includeDeprecated: true) {
-            name
-            isDeprecated
-            deprecationReason
-          }
-          possibleTypes {
-            ...TypeRef
-          }
-        }
-
-        fragment InputValue on IntrospectionInputValue {
-          name
-          type {
-            ...TypeRef
-          }
-          defaultValue
-        }
-
-        fragment TypeRef on IntrospectionType {
-          kind
-          name
-          ofType {
-            kind
-            name
-            ofType {
-              kind
-              name
-              ofType {
-                kind
-                name
-                ofType {
-                  kind
-                  name
-                  ofType {
-                    kind
-                    name
-                    ofType {
-                      kind
-                      name
-                      ofType {
-                        kind
-                        name
-                      }
-                    }
-                  }
-                }
-              }
+              document
             }
           }
         }
@@ -147,54 +89,25 @@ async function getSchema({
   if (!service_) throw Error(`Could not find graph ${graph}.`);
   const schema = service_.schema;
   if (!schema) throw Error(`Could not find schema ${graph}:${variant}`);
-  return buildClientSchema({
-    __schema: schema.introspection
-  });
+  return schema.document;
+}
+
+async function getSchema(parms: Target) {
+  const document = await getSchemaDocument(parms);
+  if (!document) {
+    throw Error(`Could not extract schema document`);
+  }
+  return buildSchema(document);
 }
 
 const headers = {
-  'Content-Type': 'application/json',
   'Access-Control-Allow-Origin': '*',
   'Cache-Control': 'no-cache, no-store, must-revalidate'
 };
 
 async function handlePOST(request: Request) {
   try {
-    const url = new URL(request.url);
-
-    const urlParts = url.pathname.split('/');
-
-    const graph = urlParts[1] || url.searchParams.get('graph') || url.searchParams.get('service');
-
-    const specifier = urlParts[2];
-
-    let hash, variant;
-    if (specifier) {
-      if (hashPattern.test(specifier)) {
-        hash = specifier;
-      } else {
-        variant = specifier;
-      }
-    }
-
-    hash = hash || url.searchParams.get('hash');
-    variant = variant || url.searchParams.get('variant') || url.searchParams.get('tag');
-
-    // Fall back to default variant if only graphID is specified
-    if (!hash && !variant) {
-      variant = 'current';
-    }
-
-    if (!graph) {
-      throw Error('graph URL path or search parameter required.');
-    }
-
-    const apiKey = request.headers.get('X-API-Key') || url.searchParams.get('apiKey');
-    if (!apiKey) {
-      throw Error('X-API-Key header or apiKey search parameter required.');
-    }
-
-    const schema = await getSchema({ graph, variant, hash, apiKey });
+    const schema = await getSchema(extractTarget(new URL(request.url)));
 
     const requestBody = await request.json();
 
@@ -206,12 +119,23 @@ async function handlePOST(request: Request) {
       JSON.stringify({
         errors: [{ message: e.message, stack: e.stack.split('\n') }]
       }),
-      { headers }
+      { headers: { ...headers, 'Content-Type': 'application/json' } }
     );
   }
 }
 
 async function handleGET(request: Request) {
+  const url = new URL(request.url);
+  if (url.searchParams.get('doc')) {
+    const document = await getSchemaDocument(extractTarget(url));
+    return new Response(document, {
+      headers: {
+        ...headers,
+        'Content-Type': 'text/plain',
+      }
+    });
+  }
+
   return new Response(
     html`
       <!DOCTYPE html>
@@ -231,7 +155,7 @@ async function handleGET(request: Request) {
           </style>
           <script src="https://unpkg.com/react@16/umd/react.production.min.js"></script>
           <script src="https://unpkg.com/react-dom@16/umd/react-dom.production.min.js"></script>
-          <script src="https://unpkg.com/graphiql@0.16/graphiql.js"></script>
+          <script src="https://unpkg.com/graphiql@1.0.5/graphiql.js"></script>
         </head>
         <body>
           <div id="graphiql">Loading&hellip;</div>
@@ -264,6 +188,7 @@ async function handleGET(request: Request) {
     `,
     {
       headers: {
+        ...headers,
         'Content-Type': 'text/html'
       }
     }

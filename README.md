@@ -10,6 +10,12 @@ Point your GraphQL tool, eg GraphiQL.app, to:
 https://introspective.pcarrier.workers.dev/$GRAPH/$VARIANT?apiKey=[...]
 ```
 
+To view the schema in GraphQL, head to:
+
+```
+https://introspective.pcarrier.workers.dev/$GRAPH/$VARIANT?doc=1&apiKey=[...]
+```
+
 ## API key
 
 After logging into [Graph Manager](https://engine.apollographql.com), your API key can be found in the `authtoken` cookie attached to [its backend domain](https://engine-graphql.apollographql.com/).
